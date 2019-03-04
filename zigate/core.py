@@ -584,6 +584,11 @@ class ZiGate(object):
                 dispatch_signal(ZIGATE_ATTRIBUTE_UPDATED, self, **{'zigate': self,
                                                                    'device': device,
                                                                    'attribute': changed})
+
+            if response.msg == 0x80A7:
+                if device.remote_map is not None:
+                    device.remote_map.handle_button(zigate=self, button=response['button'], press_type=response['type'])
+
         elif response.msg == 0x004D:  # device announce
             LOGGER.debug('Device Announce {}'.format(response))
             device = Device(response.data, self)
@@ -2041,6 +2046,12 @@ class ZiGate(object):
         for device in self._devices.values():
             device.generate_template(dirname)
 
+    def add_remote_map_to_device(self, addr, map=None):
+        self._devices.get(addr).remote_map = RemoteRemapper()
+
+    def remove_remote_map_from_device(self, addr):
+        self._devices.get(addr).remote_map = None
+
 
 class FakeZiGate(ZiGate):
     '''
@@ -2156,6 +2167,7 @@ class Device(object):
         self.missing = False
         self.genericType = ''
         self.discovery = ''
+        self.remote_map = None
 
     def _lock_acquire(self):
         r = self._lock.acquire(True, 5)
@@ -2907,3 +2919,36 @@ class Device(object):
         return groups
         '''
         return self._zigate.get_group_for_addr(self.addr)
+
+
+class RemoteRemapper:
+    class Button:
+        def __init__(self, press_types, holdable=False):
+            self._holdable = holdable
+            self._commands_to_send = {}
+            for press_type in press_types:
+                self._commands_to_send[press_type] = []
+
+        def add_command(self, press_type, function_to_call, args):
+            if press_type not in self._commands_to_send.keys():
+                return
+            self._commands_to_send[press_type].append([function_to_call, args])
+
+        def get_commands(self, press_type):
+            return self._commands_to_send[press_type]
+
+    def __init__(self, remote_map=None):
+        self._button_down = None
+        self._buttons = {}
+
+        self._buttons['left'] = self.Button(['click', 'hold', 'release'])
+        self._buttons['left'].add_command('click', 'action_move_temperature_kelvin', ['1e52', 0x01, 3500])
+        self._buttons['right'] = self.Button(['click', 'hold', 'release'])
+        self._buttons['right'].add_command('click', 'action_move_temperature_kelvin', ['1e52', 0x01, 2700])
+
+    def handle_button(self, zigate, button, press_type):
+        if button not in self._buttons.keys():
+            LOGGER.error('Not supported')
+        for command in self._buttons[button].get_commands(press_type):
+            z = getattr(zigate, command[0])(*command[1])
+
